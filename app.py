@@ -715,6 +715,12 @@ def generar_pdf_deudas(deudas):
 st.title("🏢 Registro Capital 100")
 st.caption("Sistema de cierre de caja")
 
+# ── Autenticación ────────────────────────────────────────────────
+password = st.text_input("Contraseña:", type="password")
+if password != st.secrets["PASSWORD"]:
+    st.warning("Ingresá la contraseña para continuar.")
+    st.stop()
+
 # Sidebar
 with st.sidebar:
     st.header("Navegación")
