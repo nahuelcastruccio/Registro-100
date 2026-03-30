@@ -83,12 +83,14 @@ def cargar_datos():
     cols_componentes = ['ARANCEL', 'SELLADO', 'ALTA/BAJA/INF.']
     for col in cols_componentes:
         if col in df_total.columns:
-            df_total[f'{col}_ESTADO'] = df_total[col].apply(lambda v:
-                'NO_APLICA'   if str(v).strip().upper() == 'NO'
-                else 'PENDIENTE'  if pd.isna(v) or str(v).strip() == ''
-                else 'YA_COBRADO' if str(v).strip().upper() == 'COBRADO'
-                else 'COBRADO'
-            )
+            def detectar_estado(v):
+                if pd.isna(v): return 'PENDIENTE'
+                s = str(v).strip().upper()
+                if s == '': return 'PENDIENTE'
+                if s == 'NO': return 'NO_APLICA'
+                if s == 'COBRADO': return 'YA_COBRADO'
+                return 'COBRADO'
+            df_total[f'{col}_ESTADO'] = df_total[col].apply(detectar_estado)
             df_total[col] = df_total[col].apply(limpiar_moneda)
 
     for col in ['MONTO ABONADO', 'IMPORTE TOTAL']:
@@ -182,9 +184,7 @@ def generar_pdf_gestoria(nombre_gestoria, fecha, datos_grupo):
     pdf.set_text_color(0, 0, 0)
     pdf.ln(5)
     pdf.set_font("Arial", 'B', 10)
-    espaciador = sum(anchos[:-1])
-    pdf.cell(espaciador, 10, "", 0)
-    pdf.cell(anchos[-1], 10, f"TOTAL: $ {datos_grupo['IMPORTE TOTAL'].sum():,.2f}", border=1, align='R')
+    pdf.cell(0, 10, f"IMPORTE TOTAL DEL DÍA: $ {datos_grupo['IMPORTE TOTAL'].sum():,.2f}", border=0, align='R')
     pdf.ln(8)
 
     pdf.set_font("Arial", 'I', 8)
@@ -723,10 +723,10 @@ if password != st.secrets["PASSWORD"]:
 
 # Sidebar
 with st.sidebar:
-    st.header("Navegación")
+    st.header("Menú")
     seccion = st.radio(
         "Seleccioná una sección:",
-        ["📄 PDF Gestorías", "🧾 Cierre de Caja A", "🔎 Cierre Sistema B", "💰 Estado de Deudas"],
+        ["📄 PDF Gestorías", "🧾 Cierre de Caja", "💰 Estado de Deudas"],
         label_visibility="collapsed"
     )
     st.divider()
@@ -734,6 +734,8 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
     st.caption("Los datos se actualizan automáticamente cada 5 minutos.")
+    st.divider()
+    st.markdown(f"[📊 Abrir Google Sheets](https://docs.google.com/spreadsheets/d/{SHEET_ID})")
 
 # Cargamos datos
 with st.spinner("Cargando datos desde Google Sheets..."):
@@ -775,95 +777,41 @@ if seccion == "📄 PDF Gestorías":
                     st.error(f"❌ Error en {gestoria}: {ex}")
 
 
-# ── Sección 2: Cierre A ──────────────────────────────────────────
-elif seccion == "🧾 Cierre de Caja A":
+# ── Sección 2: Cierre de Caja (A y B) ───────────────────────────
+elif seccion == "🧾 Cierre de Caja":
     st.header("🧾 Cierre de Caja")
-    st.write("Contrasta los trámites anotados con el dinero en caja.")
 
-    fecha = st.date_input("Seleccioná la fecha:", value=date.today(), format="DD/MM/YYYY")
-
-    if st.button("Generar Cierre de Caja", type="primary"):
-        try:
-            datos   = calcular_cierre(fecha, df_total, df_gastos, df_caja)
-            pdf_bytes = generar_pdf_cierre(datos)
-            nombre  = f"Cierre_Caja_{fecha.strftime('%d-%m-%Y')}.pdf"
-
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Balance total", f"$ {datos['balance_total']:,.2f}")
-            col2.metric("Diferencia efectivo", f"$ {datos['dif_efectivo']:,.2f}")
-            col3.metric("Diferencia digital",  f"$ {datos['dif_digital']:,.2f}")
-
-            if datos['balance_total'] == 0:
-                st.success("✅ La caja cerró correctamente.")
-            else:
-                st.error(f"❌ La caja no cerró. Diferencia: $ {datos['balance_total']:,.2f}")
-
-            if not datos['gestoria_dia'].empty:
-                nombres = ', '.join(sorted(datos['gestoria_dia']['GESTORIA'].unique()))
-                st.info(f"📋 Gestorías consideradas como pagas: {nombres}")
-
-            st.download_button(
-                label="⬇️ Descargar PDF",
-                data=pdf_bytes,
-                file_name=nombre,
-                mime="application/pdf"
-            )
-        except ValueError as ex:
-            st.warning(f"⚠️ {ex}")
-        except Exception as ex:
-            st.error(f"❌ Error inesperado: {ex}")
-
-
-# ── Sección 3: Cierre B ──────────────────────────────────────────
-elif seccion == "🔎 Cierre Sistema B":
-    st.header("🔎 Cierre Sistema — Verificación")
-    st.write("Contrasta los datos de los sistemas oficiales con la caja.")
-
-    fecha = st.date_input("Seleccioná la fecha:", value=date.today(), format="DD/MM/YYYY")
-
-    st.subheader("Archivos SUATS")
-    archivos_suats = st.file_uploader(
-        "Subí los tres archivos xlsx (sellos, patentes, infracciones):",
-        type="xlsx",
-        accept_multiple_files=True
+    tipo_cierre = st.radio(
+        "Seleccioná el tipo de cierre:",
+        ["Cierre A — Verificación interna", "Cierre B — Verificación sistema"],
+        horizontal=True
     )
+    st.divider()
 
-    if archivos_suats:
-        tipos_detectados = []
-        for a in archivos_suats:
-            n = a.name.lower()
-            if 'sellos' in n:
-                tipos_detectados.append(f"✅ Sellos — `{a.name}`")
-            elif 'patentes' in n:
-                tipos_detectados.append(f"✅ Patentes — `{a.name}`")
-            elif 'infracciones' in n:
-                tipos_detectados.append(f"✅ Infracciones — `{a.name}`")
-            else:
-                tipos_detectados.append(f"⚠️ No reconocido — `{a.name}`")
-        for t in tipos_detectados:
-            st.write(t)
+    if tipo_cierre == "Cierre A — Verificación interna":
+        st.write("Contrasta los trámites anotados con el dinero en caja.")
 
-    if st.button("Generar Cierre Sistema", type="primary"):
-        if not archivos_suats:
-            st.warning("⚠️ Subí al menos un archivo SUATS antes de continuar.")
-        else:
+        fecha = st.date_input("Seleccioná la fecha:", value=date.today(), format="DD/MM/YYYY")
+
+        if st.button("Generar Cierre de Caja", type="primary"):
             try:
-                datos     = calcular_cierre_B(fecha, archivos_suats, df_caja, df_sistema)
-                pdf_bytes = generar_pdf_cierre_B(datos)
-                nombre    = f"CierreB_{fecha.strftime('%d-%m-%Y')}.pdf"
+                datos     = calcular_cierre(fecha, df_total, df_gastos, df_caja)
+                pdf_bytes = generar_pdf_cierre(datos)
+                nombre    = f"Cierre_Caja_{fecha.strftime('%d-%m-%Y')}.pdf"
 
                 col1, col2, col3 = st.columns(3)
-                col1.metric("Total ingresos sistema", f"$ {datos['total_ingresos']:,.2f}")
-                col2.metric("Total egresos",           f"$ {datos['total_egresos']:,.2f}")
-                col3.metric("Resultado",               f"$ {datos['resultado']:,.2f}")
+                col1.metric("Balance total",       f"$ {datos['balance_total']:,.2f}")
+                col2.metric("Diferencia efectivo", f"$ {datos['dif_efectivo']:,.2f}")
+                col3.metric("Diferencia digital",  f"$ {datos['dif_digital']:,.2f}")
 
-                resultado = datos['resultado']
-                if resultado == 0:
-                    st.success("✅ La caja cerró correctamente según el sistema.")
-                elif resultado > 0:
-                    st.info(f"ℹ️ El sistema registra un excedente de $ {resultado:,.2f}")
+                if datos['balance_total'] == 0:
+                    st.success("✅ La caja cerró correctamente.")
                 else:
-                    st.error(f"❌ El sistema registra un faltante de $ {abs(resultado):,.2f}")
+                    st.error(f"❌ La caja no cerró. Diferencia: $ {datos['balance_total']:,.2f}")
+
+                if not datos['gestoria_dia'].empty:
+                    nombres = ', '.join(sorted(datos['gestoria_dia']['GESTORIA'].unique()))
+                    st.info(f"📋 Gestorías consideradas como pagas: {nombres}")
 
                 st.download_button(
                     label="⬇️ Descargar PDF",
@@ -876,8 +824,68 @@ elif seccion == "🔎 Cierre Sistema B":
             except Exception as ex:
                 st.error(f"❌ Error inesperado: {ex}")
 
+    else:
+        st.write("Contrasta los datos de los sistemas oficiales con la caja.")
 
-# ── Sección 4: Deudas ────────────────────────────────────────────
+        fecha = st.date_input("Seleccioná la fecha:", value=date.today(), format="DD/MM/YYYY")
+
+        st.subheader("Archivos SUATS")
+        archivos_suats = st.file_uploader(
+            "Subí los tres archivos xlsx (sellos, patentes, infracciones):",
+            type="xlsx",
+            accept_multiple_files=True
+        )
+
+        if archivos_suats:
+            tipos_detectados = []
+            for a in archivos_suats:
+                n = a.name.lower()
+                if 'sellos' in n:
+                    tipos_detectados.append(f"✅ Sellos — `{a.name}`")
+                elif 'patentes' in n:
+                    tipos_detectados.append(f"✅ Patentes — `{a.name}`")
+                elif 'infracciones' in n:
+                    tipos_detectados.append(f"✅ Infracciones — `{a.name}`")
+                else:
+                    tipos_detectados.append(f"⚠️ No reconocido — `{a.name}`")
+            for t in tipos_detectados:
+                st.write(t)
+
+        if st.button("Generar Cierre Sistema", type="primary"):
+            if not archivos_suats:
+                st.warning("⚠️ Subí al menos un archivo SUATS antes de continuar.")
+            else:
+                try:
+                    datos     = calcular_cierre_B(fecha, archivos_suats, df_caja, df_sistema)
+                    pdf_bytes = generar_pdf_cierre_B(datos)
+                    nombre    = f"CierreB_{fecha.strftime('%d-%m-%Y')}.pdf"
+
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Total ingresos sistema", f"$ {datos['total_ingresos']:,.2f}")
+                    col2.metric("Total egresos",           f"$ {datos['total_egresos']:,.2f}")
+                    col3.metric("Resultado",               f"$ {datos['resultado']:,.2f}")
+
+                    resultado = datos['resultado']
+                    if resultado == 0:
+                        st.success("✅ La caja cerró correctamente según el sistema.")
+                    elif resultado > 0:
+                        st.info(f"ℹ️ El sistema registra un excedente de $ {resultado:,.2f}")
+                    else:
+                        st.error(f"❌ El sistema registra un faltante de $ {abs(resultado):,.2f}")
+
+                    st.download_button(
+                        label="⬇️ Descargar PDF",
+                        data=pdf_bytes,
+                        file_name=nombre,
+                        mime="application/pdf"
+                    )
+                except ValueError as ex:
+                    st.warning(f"⚠️ {ex}")
+                except Exception as ex:
+                    st.error(f"❌ Error inesperado: {ex}")
+
+
+# ── Sección 3: Deudas ────────────────────────────────────────────
 elif seccion == "💰 Estado de Deudas":
     st.header("💰 Estado de Deudas")
     st.write("Resumen de deudas acumuladas por gestoría y particulares.")
