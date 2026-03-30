@@ -776,10 +776,6 @@ if seccion == "📄 PDF Gestorías":
                 except Exception as ex:
                     st.error(f"❌ Error en {gestoria}: {ex}")
         
-        if st.button("Generar PDFs", type="primary"):
-    # Línea de diagnóstico temporal
-    cols_debug = ['ARANCEL', 'SELLADO', 'ARANCEL_ESTADO', 'SELLADO_ESTADO']
-    st.dataframe(df_total[[c for c in cols_debug if c in df_total.columns]].head(10))
 
 # ── Sección 2: Cierre de Caja (A y B) ───────────────────────────
 elif seccion == "🧾 Cierre de Caja":
