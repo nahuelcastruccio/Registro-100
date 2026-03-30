@@ -190,8 +190,7 @@ def generar_pdf_gestoria(nombre_gestoria, fecha, datos_grupo):
     pdf.set_font("Arial", 'I', 8)
     pdf.set_text_color(130, 130, 130)
     pdf.multi_cell(0, 6,
-        "* El monto indicado corresponde a los trámites realizados en el día. "
-        "El pago puede realizarse en el día o al día siguiente.",
+        "* El monto indicado corresponde a los trámites realizados en el día. ",
         align='C'
     )
 
@@ -312,7 +311,7 @@ def generar_pdf_cierre(datos):
     pdf.set_text_color(130, 130, 130)
     pdf.set_x(x_start)
     pdf.cell(0, 6, f"* Inicio de caja descontado: $ {datos['inicio_caja']:,.2f}", ln=True)
-    pdf.ln(4)
+    pdf.ln(2)
 
     if not datos['gestoria_dia'].empty:
         gestoras_del_dia = datos['gestoria_dia']['GESTORIA'].unique()
@@ -324,7 +323,7 @@ def generar_pdf_cierre(datos):
             f"gestorías: {nombres}. Monto total: $ {datos['total_gestoria']:,.2f}.",
             align='C'
         )
-        pdf.ln(6)
+        pdf.ln(4)
 
     if not datos['gastos_dia'].empty:
         pdf.set_font("Arial", 'B', 10)
