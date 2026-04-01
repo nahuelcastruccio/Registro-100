@@ -195,7 +195,7 @@ def generar_pdf_gestoria(nombre_gestoria, fecha, datos_grupo):
     pdf.set_text_color(130, 130, 130)
     pdf.multi_cell(0, 6,
         "* El monto indicado corresponde a los trámites realizados en el día. "
-        "El pago puede realizarse en el día o al día siguiente.", align='C')
+                   , align='C')
     return pdf_a_bytes(pdf)
 
 # ══════════════════════════════════════════════════════════════════
@@ -754,6 +754,10 @@ INSTRUCCIONES:
 2. Compará dominios de SUATS con los anotados.
 3. Identificá trámites en el sistema que no aparecen en la planilla.
 4. Listá discrepancias con: N° recibo/dominio, tipo de trámite, monto, sistema origen.
+5. IMPORTANTE TENER EN CUENTA: LOS TRÁMITES REALIZADOS POR GESTORÍAS (NO PARTICULARES) SE CONSIDERAN PAGOS A LA HORA DE CERRAR LA CAJA AUNQUE LA TRANSFERENCIA NO FIGURE EN EL EXTRACTO DEL BANCO (SIEMPRE PAGAN POR TRANSFERENCIA)
+
+
+
 
 Respondé en español. Empezá con un resumen ejecutivo de 1-2 oraciones.
 """
@@ -947,7 +951,7 @@ def generar_pdf_deudas(deudas):
 # ══════════════════════════════════════════════════════════════════
 
 st.title("🏢 Registro Capital 100")
-st.caption("Sistema de cierre de caja")
+st.caption("Sistema de cierre de caja y registro de deudas")
 
 password = st.text_input("Contraseña:", type="password")
 if password != st.secrets["PASSWORD"]:
@@ -964,7 +968,7 @@ with st.sidebar:
         st.rerun()
     st.caption("Datos actualizados cada 5 minutos.")
     st.divider()
-    st.markdown(f"[📊 Abrir Google Sheets](https://docs.google.com/spreadsheets/d/{SHEET_ID})")
+    st.markdown(f"[📊 Abrir planilla](https://docs.google.com/spreadsheets/d/{SHEET_ID})")
 
 with st.spinner("Cargando datos..."):
     df_total, df_pagos, df_gastos, df_caja, df_sistema, df_gestorías_banco = cargar_datos()
