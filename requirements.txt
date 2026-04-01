@@ -3,3 +3,5 @@ pandas
 fpdf
 openpyxl
 pytz
+pdfplumber
+anthropic
