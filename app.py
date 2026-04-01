@@ -71,7 +71,7 @@ def cargar_datos():
         df_gastos          = pd.read_csv(url_hoja("GASTOS"))
         df_caja            = pd.read_csv(url_hoja("CAJA"))
         df_sistema         = pd.read_csv(url_hoja("SISTEMA"))
-        df_gestorías_banco = pd.read_csv(url_hoja("GESTORÍAS_BANCO"))
+        df_gestorías_banco = pd.read_csv(url_hoja("GESTORIAS_BANCO"))
     except Exception:
         st.error("No se pudo acceder al Google Sheet. Verificá que sea público.")
         st.stop()
