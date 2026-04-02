@@ -347,7 +347,7 @@ def parsear_sura_efectivo(archivo_pdf, nombre_pdf):
         raise ValueError(f"No se pudo leer {nombre_pdf}.")
 
     # Patrón flexible: busca el número después de "Efectivo" e "Importe:"
-    patron = r'Forma de Pago: Efectivo\s+Importe:[\s\S]*?([\d]+,\d+)'
+    patron = r'Forma de Pago:\s*Efectivo\s+Importe:\s*\$\s*([\d\.]+,\d+)'
     match  = re.search(patron, texto)
     if not match:
         raise ValueError(f"No se encontró 'Forma de Pago: Efectivo' en {nombre_pdf}.")
