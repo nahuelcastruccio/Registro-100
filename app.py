@@ -1062,6 +1062,11 @@ elif seccion == "🧾 Cierre de Caja":
                 st.session_state[key] = None
 
         todo_subido = all([archivos_suats, csv_banco, pdf_aranceles, pdf_formularios])
+        if pdf_aranceles:
+            with pdfplumber.open(io.BytesIO(pdf_aranceles.read())) as pdf:
+                texto = pdf.pages[-1].extract_text()
+            st.text_area("Texto extraído (última página):", texto, height=300)
+            pdf_aranceles.seek(0)  # reset para que el parser lo pueda leer después
 
         if st.button("Generar Cierre de Caja", type="primary", disabled=not todo_subido):
             try:
