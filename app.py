@@ -342,7 +342,7 @@ def generar_pdf_cierre_A(datos):
 def parsear_sura_efectivo(archivo_pdf, nombre_pdf):
     try:
         with pdfplumber.open(archivo_pdf) as pdf:
-            texto = pdf.pages[-1].extract_text()
+            texto = "\n".join(page.extract_text() for page in pdf.pages[-2:])
     except Exception:
         raise ValueError(f"No se pudo leer {nombre_pdf}.")
 
