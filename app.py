@@ -342,10 +342,12 @@ def generar_pdf_cierre_A(datos):
 def parsear_sura_efectivo(archivo_pdf, nombre_pdf):
     try:
         with pdfplumber.open(archivo_pdf) as pdf:
-            texto = pdf.pages[-1].extract_text()
+            texto = "\n".join(page.extract_text() for page in pdf.pages[-2:])
     except Exception:
         raise ValueError(f"No se pudo leer {nombre_pdf}.")
-    patron = r'Forma de Pago: Efectivo\s+Importe: \\\$ ([\d]+,\d+)'
+
+    # Patrón flexible: busca el número después de "Efectivo" e "Importe:"
+    patron = r'Forma de Pago:\s*Efectivo\s+Importe:\s*\$\s*([\d\.]+,\d+)'
     match  = re.search(patron, texto)
     if not match:
         raise ValueError(f"No se encontró 'Forma de Pago: Efectivo' en {nombre_pdf}.")
