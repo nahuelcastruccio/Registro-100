@@ -71,7 +71,7 @@ def cargar_datos():
         df_gastos          = pd.read_csv(url_hoja("GASTOS"))
         df_caja            = pd.read_csv(url_hoja("CAJA"))
         df_sistema         = pd.read_csv(url_hoja("SISTEMA"))
-        df_gestorías_banco = pd.read_csv(url_hoja("GESTORIAS_BANCO"))
+        df_gestorías_banco = pd.read_csv(url_hoja("GESTORÍAS_BANCO"))
     except Exception:
         st.error("No se pudo acceder al Google Sheet. Verificá que sea público.")
         st.stop()
@@ -195,7 +195,7 @@ def generar_pdf_gestoria(nombre_gestoria, fecha, datos_grupo):
     pdf.set_text_color(130, 130, 130)
     pdf.multi_cell(0, 6,
         "* El monto indicado corresponde a los trámites realizados en el día. "
-                   , align='C')
+        "El pago puede realizarse en el día o al día siguiente.", align='C')
     return pdf_a_bytes(pdf)
 
 # ══════════════════════════════════════════════════════════════════
@@ -342,12 +342,10 @@ def generar_pdf_cierre_A(datos):
 def parsear_sura_efectivo(archivo_pdf, nombre_pdf):
     try:
         with pdfplumber.open(archivo_pdf) as pdf:
-            texto = "\n".join(page.extract_text() for page in pdf.pages[-2:])
+            texto = pdf.pages[-1].extract_text()
     except Exception:
         raise ValueError(f"No se pudo leer {nombre_pdf}.")
-
-    # Patrón flexible: busca el número después de "Efectivo" e "Importe:"
-    patron = r'Forma de Pago:\s*Efectivo\s+Importe:\s*\$\s*([\d\.]+,\d+)'
+    patron = r'Forma de Pago: Efectivo\s+Importe: \\\$ ([\d]+,\d+)'
     match  = re.search(patron, texto)
     if not match:
         raise ValueError(f"No se encontró 'Forma de Pago: Efectivo' en {nombre_pdf}.")
@@ -754,10 +752,6 @@ INSTRUCCIONES:
 2. Compará dominios de SUATS con los anotados.
 3. Identificá trámites en el sistema que no aparecen en la planilla.
 4. Listá discrepancias con: N° recibo/dominio, tipo de trámite, monto, sistema origen.
-5. IMPORTANTE TENER EN CUENTA: LOS TRÁMITES REALIZADOS POR GESTORÍAS (NO PARTICULARES) SE CONSIDERAN PAGOS A LA HORA DE CERRAR LA CAJA AUNQUE LA TRANSFERENCIA NO FIGURE EN EL EXTRACTO DEL BANCO (SIEMPRE PAGAN POR TRANSFERENCIA)
-
-
-
 
 Respondé en español. Empezá con un resumen ejecutivo de 1-2 oraciones.
 """
@@ -951,7 +945,7 @@ def generar_pdf_deudas(deudas):
 # ══════════════════════════════════════════════════════════════════
 
 st.title("🏢 Registro Capital 100")
-st.caption("Sistema de cierre de caja y registro de deudas")
+st.caption("Sistema de cierre de caja")
 
 password = st.text_input("Contraseña:", type="password")
 if password != st.secrets["PASSWORD"]:
@@ -968,7 +962,7 @@ with st.sidebar:
         st.rerun()
     st.caption("Datos actualizados cada 5 minutos.")
     st.divider()
-    st.markdown(f"[📊 Abrir planilla](https://docs.google.com/spreadsheets/d/{SHEET_ID})")
+    st.markdown(f"[📊 Abrir Google Sheets](https://docs.google.com/spreadsheets/d/{SHEET_ID})")
 
 with st.spinner("Cargando datos..."):
     df_total, df_pagos, df_gastos, df_caja, df_sistema, df_gestorías_banco = cargar_datos()
@@ -1002,77 +996,44 @@ if seccion == "📄 PDF Gestorías":
 # ── CIERRE DE CAJA ───────────────────────────────────────────────
 elif seccion == "🧾 Cierre de Caja":
     st.header("🧾 Cierre de Caja")
-    tipo = st.radio("", ["Cierre A — Verificación interna", "Cierre B — Verificación sistema"], horizontal=True)
+
+    fecha = st.date_input("Fecha:", value=date.today(), format="DD/MM/YYYY")
+
+    modo_manual = st.toggle("⚠️ Ingresar valores manualmente (usar solo si hay problemas con los archivos)")
     st.divider()
 
-    if tipo == "Cierre A — Verificación interna":
-        st.info("ℹ️ El Cierre A es una verificación secundaria. Se recomienda siempre realizar el Cierre B.")
-        fecha = st.date_input("Fecha:", value=date.today(), format="DD/MM/YYYY")
+    # Session state
+    for key in ['datos_cierre_b', 'analisis_ia', 'pdf_aranc_bytes', 'pdf_form_bytes']:
+        if key not in st.session_state:
+            st.session_state[key] = None
 
-        if st.button("Generar Cierre A", type="primary"):
-            try:
-                datos = calcular_cierre_A(fecha, df_total, df_gastos, df_caja)
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Balance total",       f"$ {datos['balance_total']:,.2f}")
-                col2.metric("Diferencia efectivo", f"$ {datos['dif_efectivo']:,.2f}")
-                col3.metric("Diferencia digital",  f"$ {datos['dif_digital']:,.2f}")
-
-                if datos['balance_total'] == 0:
-                    st.success("✅ La caja cerró correctamente.")
-                else:
-                    st.error(f"❌ Diferencia: $ {datos['balance_total']:,.2f}")
-
-                if not datos['gestoria_dia'].empty:
-                    st.info(f"📋 Gestorías consideradas como pagas: {', '.join(sorted(datos['gestoria_dia']['GESTORIA'].unique()))}")
-
-                st.download_button("⬇️ Descargar PDF", data=generar_pdf_cierre_A(datos),
-                                   file_name=f"CierreA_{fecha.strftime('%d-%m-%Y')}.pdf",
-                                   mime="application/pdf")
-            except ValueError as ex:
-                st.warning(f"⚠️ {ex}")
-            except Exception as ex:
-                st.error(f"❌ Error: {ex}")
-
-    else:
-        fecha = st.date_input("Fecha:", value=date.today(), format="DD/MM/YYYY")
-
+    # ── Modo automático ──────────────────────────────────────────
+    if not modo_manual:
         st.subheader("Archivos requeridos")
         col1, col2 = st.columns(2)
         with col1:
-            archivos_suats = st.file_uploader("📊 SUATS (sellos, patentes, infracciones):", type="xlsx", accept_multiple_files=True)
+            archivos_suats = st.file_uploader("📊 SUATS (sellos, patentes, infracciones):",
+                                               type="xlsx", accept_multiple_files=True)
             if archivos_suats:
                 for a in archivos_suats:
                     n = a.name.lower()
-                    etiqueta = "✅ Sellos" if 'sellos' in n else "✅ Patentes" if 'patentes' in n else "✅ Infracciones" if 'infracciones' in n else "⚠️ No reconocido"
+                    etiqueta = "✅ Sellos" if 'sellos' in n else "✅ Patentes" if 'patentes' in n \
+                               else "✅ Infracciones" if 'infracciones' in n else "⚠️ No reconocido"
                     st.write(f"{etiqueta} — `{a.name}`")
             csv_banco = st.file_uploader("🏦 CSV bancario:", type="csv")
             if csv_banco: st.write(f"✅ `{csv_banco.name}`")
 
         with col2:
-            pdf_aranceles   = st.file_uploader("📄 PlanillaCaja.pdf:", type="pdf", key="pdf_aranc")
+            pdf_aranceles = st.file_uploader("📄 PlanillaCaja.pdf:", type="pdf", key="pdf_aranc")
             if pdf_aranceles: st.write(f"✅ `{pdf_aranceles.name}`")
             pdf_formularios = st.file_uploader("📄 PlanillaCaja2.pdf:", type="pdf", key="pdf_form")
             if pdf_formularios: st.write(f"✅ `{pdf_formularios.name}`")
 
         st.divider()
-
-        # Session state para el botón de IA
-        for key in ['datos_cierre_b', 'analisis_ia', 'pdf_aranc_bytes', 'pdf_form_bytes']:
-            if key not in st.session_state:
-                st.session_state[key] = None
-
         todo_subido = all([archivos_suats, csv_banco, pdf_aranceles, pdf_formularios])
-        if pdf_aranceles:
-            with pdfplumber.open(io.BytesIO(pdf_aranceles.read())) as pdf:
-                texto = "\n".join(
-                    page.extract_text() for page in pdf.pages[-2:]
-                )
-            st.text_area("Texto extraído (últimas 2 páginas):", texto, height=300)
-            pdf_aranceles.seek(0)  # reset para que el parser lo pueda leer después
 
         if st.button("Generar Cierre de Caja", type="primary", disabled=not todo_subido):
             try:
-                # Leemos los bytes de los PDFs antes de que se cierren
                 aranc_bytes = pdf_aranceles.read()
                 form_bytes  = pdf_formularios.read()
 
@@ -1092,7 +1053,7 @@ elif seccion == "🧾 Cierre de Caja":
                 col3.metric("Resultado",     f"$ {datos['resultado']:,.2f}")
 
                 if datos['resultado'] == 0:
-                    st.success("✅ La caja cerró correctamente según el sistema.")
+                    st.success("✅ La caja cerró correctamente.")
                 else:
                     diag = generar_diagnostico(datos)
                     st.error(f"❌ {diag['titulo']}")
@@ -1105,7 +1066,7 @@ elif seccion == "🧾 Cierre de Caja":
 
                 st.download_button("⬇️ Descargar PDF de cierre",
                                    data=generar_pdf_cierre_B(datos),
-                                   file_name=f"CierreB_{fecha.strftime('%d-%m-%Y')}.pdf",
+                                   file_name=f"Cierre_{fecha.strftime('%d-%m-%Y')}.pdf",
                                    mime="application/pdf", key="dl_cierre_b")
 
             except ValueError as ex:
@@ -1113,14 +1074,105 @@ elif seccion == "🧾 Cierre de Caja":
             except Exception as ex:
                 st.error(f"❌ Error: {ex}")
 
-        # Botón IA
-        datos_b = st.session_state.datos_cierre_b
-        if datos_b is not None and datos_b['resultado'] != 0:
-            st.divider()
-            st.subheader("🤖 Análisis con IA")
-            st.write("Si ya verificaste los puntos del diagnóstico y el error persiste, "
-                     "el agente de IA cruzará todos los archivos e identificará las discrepancias específicas.")
+    # ── Modo manual ──────────────────────────────────────────────
+    else:
+        st.warning("Modo manual activo. Ingresá los valores que normalmente se leen de los archivos.")
 
+        st.subheader("Valores del sistema")
+        col1, col2 = st.columns(2)
+        with col1:
+            m_sura_aranc = st.number_input("SURA Aranceles ($):",      min_value=0.0, step=1000.0, format="%.2f")
+            m_sura_form  = st.number_input("SURA Formularios ($):",    min_value=0.0, step=1000.0, format="%.2f")
+            m_suats_sel  = st.number_input("SUATS Sellos ($):",        min_value=0.0, step=1000.0, format="%.2f")
+        with col2:
+            m_suats_pat  = st.number_input("SUATS Patentes ($):",      min_value=0.0, step=1000.0, format="%.2f")
+            m_suats_inf  = st.number_input("SUATS Infracciones ($):",  min_value=0.0, step=1000.0, format="%.2f")
+            m_pat_arba   = st.number_input("Patentes ARBA ($):",       min_value=0.0, step=1000.0, format="%.2f")
+            m_pat_caba   = st.number_input("Patentes CABA ($):",       min_value=0.0, step=1000.0, format="%.2f")
+
+        st.subheader("Valores de caja")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            m_inicio = st.number_input("Inicio de caja ($):",      min_value=0.0, step=1000.0, format="%.2f")
+        with col2:
+            m_efec   = st.number_input("Efectivo contado ($):",    min_value=0.0, step=1000.0, format="%.2f")
+        with col3:
+            m_deb    = st.number_input("Débito postnet ($):",       min_value=0.0, step=1000.0, format="%.2f")
+
+        m_trf = st.number_input("Transferencias del día ($):", min_value=0.0, step=1000.0, format="%.2f")
+
+        st.divider()
+
+        if st.button("Generar Cierre de Caja", type="primary", key="btn_manual"):
+            # Construimos el dict de datos manualmente con la misma estructura que calcular_cierre_B()
+            total_sura   = m_sura_aranc + m_sura_form
+            total_suats  = m_suats_sel + m_suats_pat + m_suats_inf
+            total_pat    = m_pat_arba + m_pat_caba
+            total_sis    = total_sura + total_suats + total_pat
+            total_caja   = m_efec + m_deb + m_trf
+            resultado    = (total_sis + m_inicio) - total_caja
+
+            datos = {
+                'fecha'               : fecha.strftime('%d/%m/%Y'),
+                'efectivo_aranceles'  : m_sura_aranc,
+                'efectivo_formularios': m_sura_form,
+                'total_sura'          : total_sura,
+                'resultados_suats'    : [
+                    {'tipo': 'SUATS Sellos',       'n_consultas': 0, 'monto_consult': 0, 'monto_pagos': m_suats_sel, 'total': m_suats_sel},
+                    {'tipo': 'SUATS Patentes',     'n_consultas': 0, 'monto_consult': 0, 'monto_pagos': m_suats_pat, 'total': m_suats_pat},
+                    {'tipo': 'SUATS Infracciones', 'n_consultas': 0, 'monto_consult': 0, 'monto_pagos': m_suats_inf, 'total': m_suats_inf},
+                ],
+                'total_suats'         : total_suats,
+                'patentes_arba'       : m_pat_arba,
+                'patentes_caba'       : m_pat_caba,
+                'total_patentes'      : total_pat,
+                'total_sistema'       : total_sis,
+                'inicio_caja'         : m_inicio,
+                'efectivo'            : m_efec,
+                'debito'              : m_deb,
+                'total_transferencias': m_trf,
+                'total_caja'          : total_caja,
+                'resultado'           : resultado,
+                'detalle_banco'       : pd.DataFrame(columns=['Origen', 'Monto']),
+                'excluidos_banco'     : pd.DataFrame(columns=['Origen', 'Monto']),
+            }
+            st.session_state.datos_cierre_b  = datos
+            st.session_state.analisis_ia     = None
+            st.session_state.pdf_aranc_bytes = None
+            st.session_state.pdf_form_bytes  = None
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total sistema", f"$ {total_sis:,.2f}")
+            col2.metric("Total caja",    f"$ {total_caja:,.2f}")
+            col3.metric("Resultado",     f"$ {resultado:,.2f}")
+
+            if resultado == 0:
+                st.success("✅ La caja cerró correctamente.")
+            else:
+                diag = generar_diagnostico(datos)
+                st.error(f"❌ {diag['titulo']}")
+                st.write(diag['intro'])
+                with st.expander("📋 Ver causas probables"):
+                    for i, causa in enumerate(diag['causas'], 1):
+                        st.write(f"{i}. {causa}")
+
+            st.download_button("⬇️ Descargar PDF de cierre",
+                               data=generar_pdf_cierre_B(datos),
+                               file_name=f"Cierre_{fecha.strftime('%d-%m-%Y')}_manual.pdf",
+                               mime="application/pdf", key="dl_cierre_manual")
+
+    # ── Botón IA (aplica a ambos modos si no cerró) ──────────────
+    datos_b = st.session_state.datos_cierre_b
+    if datos_b is not None and datos_b['resultado'] != 0:
+        st.divider()
+        st.subheader("🤖 Análisis con IA")
+        st.write("Si ya verificaste los puntos del diagnóstico y el error persiste, "
+                 "el agente de IA cruzará todos los archivos e identificará las discrepancias específicas.")
+
+        # El análisis IA solo está disponible en modo automático (necesita los PDFs)
+        if st.session_state.pdf_aranc_bytes is None:
+            st.info("ℹ️ El análisis con IA no está disponible en modo manual porque requiere los PDFs de SURA.")
+        else:
             if st.button("🔍 Analizar con IA", type="primary"):
                 try:
                     with st.spinner("🤖 Analizando... (puede tardar unos segundos)"):
@@ -1136,7 +1188,7 @@ elif seccion == "🧾 Cierre de Caja":
 
                     st.download_button("⬇️ Descargar PDF con análisis IA",
                                        data=generar_pdf_cierre_B(datos_b, analisis_ia=analisis),
-                                       file_name=f"CierreB_IA_{fecha.strftime('%d-%m-%Y')}.pdf",
+                                       file_name=f"Cierre_IA_{fecha.strftime('%d-%m-%Y')}.pdf",
                                        mime="application/pdf", key="dl_ia")
                 except Exception as ex:
                     st.error(f"❌ Error al consultar la IA: {ex}")
