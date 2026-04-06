@@ -114,8 +114,12 @@ def cargar_datos():
         axis=1
     )
 
-    df_pagos['GESTORIA'] = df_pagos['GESTORIA'].astype(str).str.strip()
-    df_pagos['MONTO']    = df_pagos['MONTO'].apply(limpiar_moneda)
+    df_pagos['GESTORIA']      = df_pagos['GESTORIA'].astype(str).str.strip()
+    df_pagos['MONTO']         = df_pagos['MONTO'].apply(limpiar_moneda)
+    if 'CORRESPONDE A' in df_pagos.columns:
+        df_pagos['CORRESPONDE A'] = df_pagos['CORRESPONDE A'].fillna('').astype(str).str.strip()
+    else:
+        df_pagos['CORRESPONDE A'] = ''
     df_gastos['COSTO']   = df_gastos['COSTO'].apply(limpiar_moneda)
     df_gastos['MEDIO DE PAGO'] = df_gastos['MEDIO DE PAGO'].fillna('').astype(str).str.strip().str.upper()
     df_gestorías_banco['ALIAS_BANCO'] = df_gestorías_banco['ALIAS_BANCO'].astype(str).str.strip()
@@ -799,22 +803,81 @@ def agregar_analisis_ia_al_pdf(pdf, analisis_texto, fecha_str):
 
 def calcular_deudas(df_total, df_pagos):
     deudas = {}
+
     for gestoria, grupo in df_total[df_total['GESTORIA'] != 'Particular'].groupby('GESTORIA'):
-        importe_total  = grupo['IMPORTE TOTAL'].sum()
-        pagos          = df_pagos[df_pagos['GESTORIA'] == gestoria]['MONTO'].sum()
-        deuda_neta     = importe_total - pagos
-        if deuda_neta > 0:
+
+        # 1. Totales por día ordenados cronológicamente
+        dias = grupo.groupby('FECHA')['IMPORTE TOTAL'].sum().reset_index()
+        dias = dias.rename(columns={'IMPORTE TOTAL': 'total_dia'})
+        dias = dias.sort_values('FECHA').reset_index(drop=True)
+        dias['pagado_dia'] = 0.0
+
+        # 2. Distribuimos cada pago a los días que corresponde
+        pagos_gestoria = df_pagos[df_pagos['GESTORIA'] == gestoria].copy()
+        for _, pago in pagos_gestoria.iterrows():
+            monto_pago      = pago['MONTO']
+            corresponde_str = str(pago.get('CORRESPONDE A', '')).strip()
+            if corresponde_str == '' or corresponde_str == 'nan':
+                continue
+
+            # Parseamos las fechas separadas por coma
+            fechas = []
+            for f in corresponde_str.split(','):
+                try:
+                    fechas.append(pd.to_datetime(f.strip(), dayfirst=True))
+                except:
+                    continue
+            if not fechas:
+                continue
+
+            # Distribuimos proporcionalmente según el importe de cada día cubierto
+            mask_fechas       = dias['FECHA'].isin(fechas)
+            totales_cubiertos = dias.loc[mask_fechas, 'total_dia'].sum()
+            for fecha in fechas:
+                mask = dias['FECHA'] == fecha
+                if mask.any() and totales_cubiertos > 0:
+                    proporcion = dias.loc[mask, 'total_dia'].values[0] / totales_cubiertos
+                    dias.loc[mask, 'pagado_dia'] += monto_pago * proporcion
+
+        # 3. Saldo por día
+        dias['saldo'] = dias['total_dia'] - dias['pagado_dia']
+
+        # 4. Saldo a favor se aplica al día pendiente más antiguo
+        saldo_favor = 0.0
+        for idx in dias.index:
+            dias.loc[idx, 'saldo'] -= saldo_favor
+            saldo_favor = 0.0
+            if dias.loc[idx, 'saldo'] < 0:
+                saldo_favor = abs(dias.loc[idx, 'saldo'])
+                dias.loc[idx, 'saldo'] = 0.0
+
+        deuda_neta    = dias['saldo'].sum()
+        importe_total = dias['total_dia'].sum()
+        total_pagado  = dias['pagado_dia'].sum()
+
+        # Incluimos si hay deuda O saldo a favor
+        if deuda_neta > 0 or saldo_favor > 0:
+            detalle_tramites = grupo[['FECHA','TRAMITE','REF',
+                                      'N° RECIBO / DOMINIO','IMPORTE TOTAL']].sort_values('FECHA')
             deudas[gestoria] = {
-                'tipo': 'GESTORIA', 'total': deuda_neta,
-                'importe_total': importe_total, 'pagos': pagos,
-                'detalle': grupo[['FECHA','TRAMITE','REF','N° RECIBO / DOMINIO','IMPORTE TOTAL']].sort_values('FECHA'),
-                'detalle_pagos': df_pagos[df_pagos['GESTORIA'] == gestoria][['FECHA','MONTO']].sort_values('FECHA'),
+                'tipo'         : 'GESTORIA',
+                'total'        : deuda_neta,
+                'saldo_favor'  : saldo_favor,
+                'dias'         : dias,
+                'detalle'      : detalle_tramites,
+                'detalle_pagos': pagos_gestoria[['FECHA','MONTO','CORRESPONDE A']].sort_values('FECHA'),
+                'importe_total': importe_total,
+                'pagos'        : total_pagado,
             }
+
+    # Particulares — sin cambios
     particulares = df_total[(df_total['GESTORIA'] == 'Particular') & (df_total['DEBE'] > 0)]
     if not particulares.empty:
         deudas['Particular'] = {
-            'tipo': 'PARTICULAR', 'total': particulares['DEBE'].sum(),
-            'detalle': particulares[['FECHA','TRAMITE','REF','N° RECIBO / DOMINIO','IMPORTE TOTAL','DEBE']].sort_values('FECHA'),
+            'tipo'   : 'PARTICULAR',
+            'total'  : particulares['DEBE'].sum(),
+            'detalle': particulares[['FECHA','TRAMITE','REF',
+                                     'N° RECIBO / DOMINIO','IMPORTE TOTAL','DEBE']].sort_values('FECHA'),
         }
     return deudas
 
@@ -835,8 +898,59 @@ def generar_pdf_deudas(deudas):
 
         if datos['tipo'] == 'GESTORIA':
             tiene_ref = datos['detalle']['REF'].apply(lambda v: pd.notna(v) and str(v).strip() not in ('', 'nan')).any()
+
+            # --- RESUMEN POR DÍA ---
             pdf.set_font("Arial", 'B', 9)
-            pdf.cell(0, 8, "Trámites realizados:", ln=True)
+            pdf.cell(0, 8, "Resumen por día:", ln=True)
+            pdf.set_font("Arial", 'B', 8)
+            pdf.set_fill_color(240, 240, 240)
+
+            anchos_dias = [35, 45, 45, 45, 20]
+            for col, ancho in zip(['FECHA', 'TOTAL DÍA', 'PAGADO', 'SALDO', ''], anchos_dias):
+                pdf.cell(ancho, 10, col, border=1, align='C', fill=True)
+            pdf.ln()
+
+            pdf.set_font("Arial", size=8)
+            for _, dia in datos['dias'].iterrows():
+                saldo = dia['saldo']
+                pdf.set_text_color(0, 0, 0)
+                pdf.cell(anchos_dias[0], 10, dia['FECHA'].strftime('%d/%m/%Y'), border=1, align='C')
+                pdf.cell(anchos_dias[1], 10, f"$ {dia['total_dia']:,.2f}",  border=1, align='R')
+                pdf.cell(anchos_dias[2], 10, f"$ {dia['pagado_dia']:,.2f}", border=1, align='R')
+                if saldo <= 0:
+                    pdf.set_text_color(0, 128, 0)
+                    pdf.cell(anchos_dias[3], 10, f"$ {saldo:,.2f}", border=1, align='R')
+                    pdf.cell(anchos_dias[4], 10, "OK",              border=1, align='C')
+                else:
+                    pdf.set_text_color(200, 0, 0)
+                    pdf.cell(anchos_dias[3], 10, f"$ {saldo:,.2f}", border=1, align='R')
+                    pdf.cell(anchos_dias[4], 10, "",                border=1, align='C')
+                pdf.ln()
+
+            # Totales del resumen
+            pdf.set_font("Arial", 'B', 9)
+            pdf.set_text_color(0, 0, 0)
+            pdf.cell(anchos_dias[0], 10, "TOTALES",                              border=1, align='R')
+            pdf.cell(anchos_dias[1], 10, f"$ {datos['importe_total']:,.2f}",     border=1, align='R')
+            pdf.cell(anchos_dias[2], 10, f"$ {datos['pagos']:,.2f}",             border=1, align='R')
+            pdf.set_text_color(200, 0, 0)
+            pdf.cell(anchos_dias[3], 10, f"$ {datos['total']:,.2f}",             border=1, align='R')
+            pdf.cell(anchos_dias[4], 10, "",                                      border=1)
+            pdf.ln(6)
+
+            # Saldo a favor si existe
+            if datos['saldo_favor'] > 0:
+                pdf.set_font("Arial", 'I', 9)
+                pdf.set_text_color(0, 128, 0)
+                pdf.cell(0, 8,
+                    f"Saldo a favor: $ {datos['saldo_favor']:,.2f} — se aplicará al próximo período.",
+                    ln=True)
+                pdf.ln(4)
+
+            # --- DETALLE DE TRÁMITES ---
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_font("Arial", 'B', 9)
+            pdf.cell(0, 8, "Detalle de trámites:", ln=True)
             pdf.set_font("Arial", 'B', 8)
             pdf.set_fill_color(240, 240, 240)
 
@@ -855,44 +969,43 @@ def generar_pdf_deudas(deudas):
             for _, fila in datos['detalle'].iterrows():
                 pdf.set_text_color(0, 0, 0)
                 pdf.cell(anchos[0], 10, fila['FECHA'].strftime('%d/%m/%Y'), border=1, align='C')
-                pdf.cell(anchos[1], 10, str(fila['TRAMITE']), border=1)
+                pdf.cell(anchos[1], 10, str(fila['TRAMITE']),               border=1)
                 if tiene_ref:
                     ref = str(fila['REF']) if pd.notna(fila.get('REF')) and str(fila.get('REF')).strip() not in ('','nan') else '-'
-                    pdf.cell(anchos[2], 10, ref, border=1)
-                    pdf.cell(anchos[3], 10, str(fila['N° RECIBO / DOMINIO']), border=1)
-                    pdf.cell(anchos[4], 10, f"$ {fila['IMPORTE TOTAL']:,.2f}", border=1, align='R', ln=True)
+                    pdf.cell(anchos[2], 10, ref,                                border=1)
+                    pdf.cell(anchos[3], 10, str(fila['N° RECIBO / DOMINIO']),   border=1)
+                    pdf.cell(anchos[4], 10, f"$ {fila['IMPORTE TOTAL']:,.2f}",  border=1, align='R', ln=True)
                 else:
-                    pdf.cell(anchos[2], 10, str(fila['N° RECIBO / DOMINIO']), border=1)
-                    pdf.cell(anchos[3], 10, f"$ {fila['IMPORTE TOTAL']:,.2f}", border=1, align='R', ln=True)
+                    pdf.cell(anchos[2], 10, str(fila['N° RECIBO / DOMINIO']),   border=1)
+                    pdf.cell(anchos[3], 10, f"$ {fila['IMPORTE TOTAL']:,.2f}",  border=1, align='R', ln=True)
 
-            espaciador = sum(anchos[:-1])
-            pdf.set_font("Arial", 'B', 9)
-            pdf.set_text_color(0, 0, 0)
-            pdf.cell(espaciador, 10, "TOTAL TRÁMITES", border=1, align='R')
-            pdf.cell(anchos[-1], 10, f"$ {datos['importe_total']:,.2f}", border=1, align='R')
-            pdf.ln(10)
+            pdf.ln(6)
 
+            # --- PAGOS REGISTRADOS ---
             if not datos['detalle_pagos'].empty:
                 pdf.set_font("Arial", 'B', 9)
                 pdf.set_text_color(0, 0, 0)
                 pdf.cell(0, 8, "Pagos registrados:", ln=True)
                 pdf.set_font("Arial", 'B', 8)
                 pdf.set_fill_color(240, 240, 240)
-                for col, ancho in [('FECHA', 25), ('MONTO', 165)]:
+                for col, ancho in [('FECHA PAGO', 30), ('CORRESPONDE A', 80), ('MONTO', 80)]:
                     pdf.cell(ancho, 10, col, border=1, align='C', fill=True)
                 pdf.ln()
                 pdf.set_font("Arial", size=8)
                 for _, pago in datos['detalle_pagos'].iterrows():
                     pdf.set_text_color(0, 0, 0)
-                    pdf.cell(25, 10, pago['FECHA'].strftime('%d/%m/%Y'), border=1, align='C')
+                    pdf.cell(30, 10, pago['FECHA'].strftime('%d/%m/%Y'), border=1, align='C')
+                    pdf.cell(80, 10, str(pago['CORRESPONDE A']),          border=1)
                     pdf.set_text_color(0, 128, 0)
-                    pdf.cell(165, 10, f"$ {pago['MONTO']:,.2f}", border=1, align='R', ln=True)
+                    pdf.cell(80, 10, f"$ {pago['MONTO']:,.2f}",           border=1, align='R', ln=True)
                 pdf.set_font("Arial", 'B', 9)
                 pdf.set_text_color(0, 128, 0)
-                pdf.cell(25, 10, "TOTAL PAGADO", border=1, align='R')
-                pdf.cell(165, 10, f"$ {datos['pagos']:,.2f}", border=1, align='R')
-                pdf.ln(10)
+                pdf.cell(110, 10, "TOTAL PAGADO", border=1, align='R')
+                pdf.cell(80,  10, f"$ {datos['pagos']:,.2f}", border=1, align='R')
+                pdf.ln(8)
 
+            # --- DEUDA NETA ---
+            espaciador = sum(anchos[:-1])
             pdf.set_font("Arial", 'B', 11)
             pdf.set_text_color(200, 0, 0)
             pdf.cell(espaciador, 10, "DEUDA NETA:", border=1, align='R')
